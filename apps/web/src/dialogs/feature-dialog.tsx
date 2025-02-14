@@ -25,6 +25,8 @@ import Config from "../utils/config";
 
 import { useEffect } from "react";
 import { ArrowRight, Checkmark, Icon, Warn } from "../components/icons";
+import { BaseDialogProps, DialogManager } from "../common/dialog-manager";
+import { strings } from "@notesnook/intl";
 
 type CallToAction = {
   title: string;
@@ -47,10 +49,10 @@ type Feature = {
 export type FeatureKeys = "confirmed" | "highlights";
 const features: Record<FeatureKeys, Feature> = {
   confirmed: {
-    title: "Email confirmed!",
-    subtitle: "You can now sync your notes to unlimited devices.",
+    title: strings.emailConfirmed(),
+    subtitle: strings.confirmEmailThankyou(),
     cta: {
-      title: "Continue",
+      title: strings.continue(),
       icon: ArrowRight,
       action: () => hardNavigate(getHomeRoute())
     }
@@ -89,9 +91,21 @@ const features: Record<FeatureKeys, Feature> = {
             )
           }
         ]
-      : [],
+      : [
+          {
+            title: "Keyboard shortcuts for tabs",
+            subtitle: (
+              <>
+                <Code text="Ctrl/Cmd+t" /> to open new tab,{" "}
+                <Code text="Ctrl/Cmd+n" /> to create a new note,{" "}
+                <Code text="Ctrl/Cmd+w" /> to close the active tab and
+                <Code text="Ctrl/Cmd+Shift+W" /> to close all tabs
+              </>
+            )
+          }
+        ],
     cta: {
-      title: "Got it",
+      title: strings.gotIt(),
       icon: Checkmark,
       action: () => {
         Config.set(`${appVersion.numerical}:highlights`, true);
@@ -111,12 +125,13 @@ const features: Record<FeatureKeys, Feature> = {
   }
 };
 
-type FeatureDialogProps = {
+type FeatureDialogProps = BaseDialogProps<boolean> & {
   featureName: FeatureKeys;
-  onClose: (result: boolean) => void;
 };
 
-function FeatureDialog(props: FeatureDialogProps) {
+export const FeatureDialog = DialogManager.register(function FeatureDialog(
+  props: FeatureDialogProps
+) {
   const { featureName, onClose } = props;
   const feature = features[featureName];
 
@@ -176,8 +191,7 @@ function FeatureDialog(props: FeatureDialogProps) {
       </Flex>
     </Dialog>
   );
-}
-export default FeatureDialog;
+});
 
 type CodeProps = { text: string; href?: string };
 export function Code(props: CodeProps) {

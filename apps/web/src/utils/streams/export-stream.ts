@@ -17,97 +17,53 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-import { sanitizeFilename } from "@notesnook/common";
+import { ExportableItem } from "@notesnook/common";
 import { db } from "../../common/db";
-import { exportToPDF } from "../../common/export";
-import Vault from "../../common/vault";
-import { showToast } from "../toast";
-import { makeUniqueFilename } from "./utils";
 import { ZipFile } from "./zip-stream";
+import { streamingDecryptFile } from "../../interfaces/fs";
 
-const FORMAT_TO_EXT = {
-  pdf: "pdf",
-  md: "md",
-  txt: "txt",
-  html: "html",
-  "md-frontmatter": "md"
-} as const;
-
-export class ExportStream extends ReadableStream<ZipFile> {
+export class ExportStream extends TransformStream<
+  ExportableItem | Error,
+  ZipFile
+> {
+  progress = 0;
   constructor(
-    noteIds: string[],
-    format: "pdf" | "md" | "txt" | "html" | "md-frontmatter",
-    signal?: AbortSignal,
-    onProgress?: (current: number, text: string) => void
+    report: (progress: { text: string; current?: number }) => void,
+    handleError: (error: Error) => void
   ) {
-    const textEncoder = new TextEncoder();
-    let index = 0;
-    const counters: Record<string, number> = {};
-    let vaultUnlocked = false;
-
     super({
-      async start() {
-        if (noteIds.length === 1 && db.notes?.note(noteIds[0])?.data.locked) {
-          vaultUnlocked = await Vault.unlockVault();
-          if (!vaultUnlocked) return false;
-        } else if (noteIds.length > 1 && (await db.vault?.exists())) {
-          vaultUnlocked = await Vault.unlockVault();
-          if (!vaultUnlocked)
-            showToast(
-              "error",
-              "Failed to unlock vault. Locked notes will be skipped."
-            );
-        }
-      },
-      async pull(controller) {
-        if (signal?.aborted) {
-          controller.close();
+      transform: async (item, controller) => {
+        if (item instanceof Error) {
+          handleError(item);
           return;
         }
-
-        const note = db.notes?.note(noteIds[index++]);
-        if (!note) return;
-        if (!vaultUnlocked && note.data.locked) return;
-
-        onProgress && onProgress(index, `Exporting "${note.title}"...`);
-
-        const rawContent = await db.content?.raw(note.data.contentId);
-        const content = note.data.locked
-          ? await db.vault?.decryptContent(rawContent)
-          : rawContent;
-
-        const exported = await note
-          .export(format === "pdf" ? "html" : format, content)
-          .catch((e: Error) => {
-            console.error(note.data, e);
-            showToast(
-              "error",
-              `Failed to export note "${note.title}": ${e.message}`
-            );
+        if (item.type === "attachment") {
+          report({ text: `Downloading attachment: ${item.path}` });
+          await db
+            .fs()
+            .downloadFile("exports", item.data.hash, item.data.chunkSize);
+          const key = await db.attachments.decryptKey(item.data.key);
+          if (!key) return;
+          const stream = await streamingDecryptFile(item.data.hash, {
+            key,
+            iv: item.data.iv,
+            name: item.data.filename,
+            type: item.data.mimeType,
+            isUploaded: !!item.data.dateUploaded
           });
 
-        if (typeof exported !== "string") {
-          showToast("error", `Failed to export note "${note.title}"`);
-          return;
-        }
-
-        if (format === "pdf") {
-          await exportToPDF(note.title, exported);
-          controller.close();
-          return;
-        }
-
-        const filename = sanitizeFilename(note.title, { replacement: "-" });
-        const ext = FORMAT_TO_EXT[format];
-        controller.enqueue({
-          path: makeUniqueFilename([filename, ext].join("."), counters),
-          data: textEncoder.encode(exported),
-          mtime: new Date(note.data.dateEdited),
-          ctime: new Date(note.data.dateCreated)
-        });
-
-        if (index === noteIds.length) {
-          controller.close();
+          if (!stream) return;
+          controller.enqueue({ ...item, data: stream });
+          report({
+            current: this.progress++,
+            text: `Saving attachment: ${item.path}`
+          });
+        } else {
+          controller.enqueue(item);
+          report({
+            current: this.progress++,
+            text: `Exporting note: ${item.path}`
+          });
         }
       }
     });

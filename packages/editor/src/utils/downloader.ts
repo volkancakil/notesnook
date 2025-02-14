@@ -17,10 +17,11 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-import DataURL from "@notesnook/core/dist/utils/dataurl";
+import { DataURL } from "@notesnook/common";
 
 export type DownloadOptions = {
-  corsHost: string;
+  corsHost?: string;
+  signal?: AbortSignal;
 };
 
 /**
@@ -61,7 +62,7 @@ const UTITypes: Record<string, string> = {
 };
 
 export function corsify(url?: string, host?: string) {
-  if (host && url && !url.startsWith("blob:") && !isDataUrl(url))
+  if (host && url && !url.startsWith("blob:") && !DataURL.isValid(url))
     return `${host}/${url}`;
   return url;
 }
@@ -73,24 +74,17 @@ export async function downloadImage(url: string, options?: DownloadOptions) {
   const response = await fetch(corsifiedURL, {
     mode: "cors",
     credentials: "omit",
-    cache: "force-cache"
+    cache: "force-cache",
+    signal: options?.signal
   });
   if (!response.ok) throw new Error(`invalid status code ${response.status}`);
 
   let contentType = response.headers.get("Content-Type");
-  const contentLength = response.headers.get("Content-Length");
 
   if (contentType && UTITypes[contentType]) contentType = UTITypes[contentType];
 
-  if (
-    !contentType ||
-    !contentLength ||
-    contentLength === "0" ||
-    !contentType.startsWith("image/")
-  )
-    throw new Error("not an image");
+  if (!contentType || !contentType.startsWith("image/")) return;
 
-  const size = parseInt(contentLength);
   let blob = await response.blob();
   if (UTITypes[blob.type])
     blob = new Blob([blob], {
@@ -101,7 +95,7 @@ export async function downloadImage(url: string, options?: DownloadOptions) {
     blob,
     url: URL.createObjectURL(blob),
     mimeType: contentType,
-    size
+    size: blob.size
   };
 }
 
@@ -115,21 +109,40 @@ export function toDataURL(blob: Blob): Promise<string> {
   });
 }
 
-export function isDataUrl(url?: string): boolean {
-  return url?.startsWith("data:") || false;
-}
-
 const OBJECT_URL_CACHE: Record<string, string | undefined> = {};
-export function toBlobURL(dataurl: string, id?: string) {
+export function toBlobURL(
+  dataurl: string,
+  type: "image" | "other" = "other",
+  mimeType?: string,
+  id?: string
+) {
   if (id && OBJECT_URL_CACHE[id]) return OBJECT_URL_CACHE[id];
-  if (!isDataUrl(dataurl)) return;
+  if (!DataURL.isValid(dataurl)) return;
 
-  const { data, mime } = DataURL.toObject(dataurl); //.split(",");
-  if (!data || !mime) return;
+  const dataurlObject = DataURL.toObject(dataurl);
+  let mime = dataurlObject.mimeType || "";
+  const data = dataurlObject.data;
+
+  if (!data) return;
+
+  // sometimes the provided mime type in the dataurl can be wrong so we
+  // fallback and make sure the browser loads the image properly.
+  if (type === "image" && !mime.startsWith("image/")) {
+    mime = mimeType && mimeType.startsWith("image/") ? mimeType : "image/*";
+  }
+
   const objectURL = URL.createObjectURL(
-    new Blob([Buffer.from(data, "base64")], { type: mime })
+    new Blob([Buffer.from(data, "base64")], { type: mimeType })
   );
 
   if (id) OBJECT_URL_CACHE[id] = objectURL;
   return objectURL;
+}
+
+export function revokeBloburl(id: string) {
+  const url = OBJECT_URL_CACHE[id];
+  if (!url) return;
+
+  URL.revokeObjectURL(url);
+  OBJECT_URL_CACHE[id] = undefined;
 }
